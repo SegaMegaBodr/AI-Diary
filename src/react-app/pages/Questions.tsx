@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useAuth } from '@getmocha/users-service/react';
+import { useAuth } from '@/react-app/contexts/AuthContext';
 import { Sun, Moon, Send, ArrowLeft } from 'lucide-react';
 import { Link, useNavigate } from 'react-router';
 import Layout from '@/react-app/components/Layout';
