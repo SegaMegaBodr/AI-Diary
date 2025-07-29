@@ -1,4 +1,4 @@
-import { useAuth } from '@getmocha/users-service/react';
+import { useAuth } from '@/react-app/contexts/AuthContext';
 import { ArrowLeft } from 'lucide-react';
 import { Link } from 'react-router';
 import Layout from '@/react-app/components/Layout';

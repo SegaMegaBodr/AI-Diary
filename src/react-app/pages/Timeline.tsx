@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useAuth } from '@getmocha/users-service/react';
+import { useAuth } from '@/react-app/contexts/AuthContext';
 import { ArrowLeft, Calendar, Sun, Moon, Filter, Heart, Search, Edit3, Trash2, Download } from 'lucide-react';
 import { Link } from 'react-router';
 import Layout from '@/react-app/components/Layout';

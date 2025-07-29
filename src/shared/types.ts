@@ -8,6 +8,7 @@ export const AnswerSchema = z.object({
   question_1: z.string().nullable(),
   question_2: z.string().nullable(), 
   question_3: z.string().nullable(),
+  notion_page_id: z.string().nullable().optional(),
   created_at: z.string().optional(),
   updated_at: z.string().optional(),
 });
@@ -34,6 +35,7 @@ export const UserSettingsSchema = z.object({
   morning_notification_time: z.string().nullable(),
   evening_notification_time: z.string().nullable(),
   theme: z.enum(['light', 'dark']).default('light'),
+  notion_token: z.string().nullable().optional(),
   created_at: z.string().optional(),
   updated_at: z.string().optional(),
 });
@@ -61,6 +63,7 @@ export const UpdateSettingsRequestSchema = z.object({
   morning_notification_time: z.string().nullable().optional(),
   evening_notification_time: z.string().nullable().optional(),
   theme: z.enum(['light', 'dark']).optional(),
+  notion_token: z.string().optional(),
 });
 
 export type UpdateSettingsRequest = z.infer<typeof UpdateSettingsRequestSchema>;

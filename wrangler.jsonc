@@ -18,4 +18,10 @@
       "database_id": "01985238-4379-7857-a298-d6ee1ef2da6a",
     },
   ],
+  "vars": {
+    "NOTION_CLIENT_ID": "your-notion-client-id",
+    "NOTION_CLIENT_SECRET": "your-notion-client-secret",
+    "NOTION_REDIRECT_URI": "https://your-app.com/auth/callback",
+    "NOTION_DATABASE_ID": "your-database-id"
+  }
 }
