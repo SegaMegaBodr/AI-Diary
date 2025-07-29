@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useAuth } from '@getmocha/users-service/react';
+import { useAuth } from '@/react-app/contexts/AuthContext';
 import { 
   ArrowLeft, Plus, CheckCircle2, Circle, Trash2, Edit3, 
   Calendar, Flag, Clock, Star, Sun, Timer,
