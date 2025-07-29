@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useAuth } from '@getmocha/users-service/react';
+import { useAuth } from '@/react-app/contexts/AuthContext';
 import { ArrowLeft, Clock, Palette, Save } from 'lucide-react';
 import { Link } from 'react-router';
 import Layout from '@/react-app/components/Layout';
@@ -202,21 +202,20 @@ export default function Settings() {
           <div className="bg-white/70 backdrop-blur-sm rounded-2xl p-6 shadow-sm border border-blue-100/50">
             <h2 className="text-xl font-semibold text-gray-900 mb-4">Информация профиля</h2>
             <div className="flex items-center space-x-4">
-              {user.google_user_data.picture && (
+              {user.notion_user_data?.avatar_url && (
                 <img
-                  src={user.google_user_data.picture}
+                  src={user.notion_user_data.avatar_url}
                   alt="Profile"
                   className="w-16 h-16 rounded-full border-2 border-blue-200"
                 />
               )}
               <div>
                 <p className="font-medium text-gray-900">
-                  {user.google_user_data.name || 'Пользователь'}
+                  {user.notion_user_data?.name || 'Пользователь'}
                 </p>
-                <p className="text-gray-600">{user.email}</p>
-                <p className="text-sm text-gray-500">
-                  Присоединился {new Date(user.created_at).toLocaleDateString('ru-RU')}
-                </p>
+                {user.notion_user_data?.person?.email && (
+                  <p className="text-gray-600">{user.notion_user_data.person.email}</p>
+                )}
               </div>
             </div>
           </div>

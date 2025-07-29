@@ -1,4 +1,4 @@
-import { useAuth } from '@getmocha/users-service/react';
+import { useAuth } from '@/react-app/contexts/AuthContext';
 import { Heart, ArrowRight, Sparkles, CheckSquare, Timer } from 'lucide-react';
 import Layout from '@/react-app/components/Layout';
 
@@ -64,7 +64,7 @@ export default function Home() {
             onClick={redirectToLogin}
             className="inline-flex items-center space-x-3 px-8 py-4 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white rounded-2xl transition-all duration-200 font-semibold text-lg shadow-lg hover:shadow-xl"
           >
-            <span>Войти через Google</span>
+            <span>Войти через Notion</span>
             <ArrowRight className="w-5 h-5" />
           </button>
         </div>
@@ -81,7 +81,7 @@ export default function Home() {
       <div className="max-w-4xl mx-auto">
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-gray-900 mb-2">
-            {greeting}, {user.google_user_data.given_name || 'друг'}!
+            {greeting}, {user.notion_user_data?.name || 'друг'}!
           </h1>
           <p className="text-gray-600">
             {isEvening 

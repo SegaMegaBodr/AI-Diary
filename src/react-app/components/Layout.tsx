@@ -1,6 +1,6 @@
 import { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router';
-import { useAuth } from '@getmocha/users-service/react';
+import { useAuth } from '@/react-app/contexts/AuthContext';
 import { Home, FileText, Heart, Clock, Settings, LogOut, CheckSquare, Timer } from 'lucide-react';
 import { useTheme } from '@/react-app/contexts/ThemeContext';
 
@@ -51,7 +51,7 @@ export default function Layout({ children }: LayoutProps) {
                 <span className={`text-sm transition-colors duration-300 ${
                   isDark ? 'text-gray-300' : 'text-gray-600'
                 }`}>
-                  {user.google_user_data.given_name || user.email}
+                  {user.notion_user_data?.name || user.id}
                 </span>
                 <button
                   onClick={logout}
