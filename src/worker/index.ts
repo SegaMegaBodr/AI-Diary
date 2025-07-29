@@ -1,13 +1,6 @@
-import { Hono } from "hono";
+import { Hono, type MiddlewareHandler } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { getCookie, setCookie } from "hono/cookie";
-import {
-  authMiddleware,
-  exchangeCodeForSessionToken,
-  getOAuthRedirectUrl,
-  deleteSession,
-  MOCHA_SESSION_TOKEN_COOKIE_NAME,
-} from "@getmocha/users-service/backend";
 import {
   CreateAnswerRequestSchema,
   CreatePracticeRequestSchema,
@@ -23,6 +16,16 @@ import {
   type PomodoroSession,
 } from "@/shared/types";
 
+interface Env {
+  DB: D1Database;
+  MOCHA_USERS_SERVICE_API_URL: string;
+  MOCHA_USERS_SERVICE_API_KEY: string;
+  NOTION_CLIENT_ID: string;
+  NOTION_CLIENT_SECRET: string;
+  NOTION_REDIRECT_URI: string;
+  NOTION_DATABASE_ID: string;
+}
+
 const app = new Hono<{ Bindings: Env }>();
 
 // CORS middleware for development
@@ -37,65 +40,124 @@ app.use('*', async (c, next) => {
 app.options('*', (c) => c.text('', 200));
 
 // OAuth Routes
-app.get('/api/oauth/google/redirect_url', async (c) => {
-  const redirectUrl = await getOAuthRedirectUrl('google', {
-    apiUrl: c.env.MOCHA_USERS_SERVICE_API_URL,
-    apiKey: c.env.MOCHA_USERS_SERVICE_API_KEY,
-  });
+const NOTION_TOKEN_COOKIE_NAME = 'NOTION_TOKEN';
+const NOTION_USER_COOKIE_NAME = 'NOTION_USER_ID';
 
+const notionAuthMiddleware: MiddlewareHandler = async (c, next) => {
+  const token = getCookie(c, NOTION_TOKEN_COOKIE_NAME);
+  const userId = getCookie(c, NOTION_USER_COOKIE_NAME);
+  if (!token || !userId) return c.json({ error: 'Unauthorized' }, 401);
+  c.set('user', { id: userId, notion_token: token });
+  await next();
+};
+
+app.get('/api/oauth/notion/redirect_url', (c) => {
+  const params = new URLSearchParams({
+    owner: 'user',
+    client_id: c.env.NOTION_CLIENT_ID,
+    redirect_uri: c.env.NOTION_REDIRECT_URI,
+    response_type: 'code',
+  });
+  const redirectUrl = `https://api.notion.com/v1/oauth/authorize?${params}`;
   return c.json({ redirectUrl }, 200);
 });
 
-app.post("/api/sessions", async (c) => {
+app.post('/api/oauth/notion/token', async (c) => {
   const body = await c.req.json();
+  const code = body.code;
+  if (!code) return c.json({ error: 'No authorization code provided' }, 400);
 
-  if (!body.code) {
-    return c.json({ error: "No authorization code provided" }, 400);
+  const authHeader =
+    'Basic ' + btoa(`${c.env.NOTION_CLIENT_ID}:${c.env.NOTION_CLIENT_SECRET}`);
+
+  const tokenRes = await fetch('https://api.notion.com/v1/oauth/token', {
+    method: 'POST',
+    headers: {
+      Authorization: authHeader,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: c.env.NOTION_REDIRECT_URI,
+    }),
+  });
+
+  if (!tokenRes.ok) {
+    const error = await tokenRes.text();
+    return c.json({ error }, 400);
   }
 
-  const sessionToken = await exchangeCodeForSessionToken(body.code, {
-    apiUrl: c.env.MOCHA_USERS_SERVICE_API_URL,
-    apiKey: c.env.MOCHA_USERS_SERVICE_API_KEY,
+  const tokenData = await tokenRes.json<{ access_token: string }>();
+  const accessToken = tokenData.access_token;
+
+  const meRes = await fetch('https://api.notion.com/v1/users/me', {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Notion-Version': '2022-06-28',
+    },
   });
 
-  setCookie(c, MOCHA_SESSION_TOKEN_COOKIE_NAME, sessionToken, {
+  const meData = await meRes.json<{ id: string; name?: string; avatar_url?: string }>();
+  const userId = meData.id;
+
+  await c.env.DB.prepare(
+    `INSERT INTO user_settings (user_id, theme, notion_token, created_at, updated_at)
+     VALUES (?, 'light', ?, datetime('now'), datetime('now'))
+     ON CONFLICT(user_id) DO UPDATE SET notion_token = excluded.notion_token, updated_at = datetime('now')`
+  ).bind(userId, accessToken).run();
+
+  setCookie(c, NOTION_TOKEN_COOKIE_NAME, accessToken, {
     httpOnly: true,
-    path: "/",
-    sameSite: "none",
+    path: '/',
+    sameSite: 'none',
     secure: true,
-    maxAge: 60 * 24 * 60 * 60, // 60 days
+    maxAge: 60 * 24 * 60 * 60,
+  });
+  setCookie(c, NOTION_USER_COOKIE_NAME, userId, {
+    httpOnly: true,
+    path: '/',
+    sameSite: 'none',
+    secure: true,
+    maxAge: 60 * 24 * 60 * 60,
   });
 
-  return c.json({ success: true }, 200);
+  return c.json({ success: true });
 });
 
-app.get("/api/users/me", authMiddleware, async (c) => {
-  return c.json(c.get("user"));
+app.get('/api/users/me', notionAuthMiddleware, async (c) => {
+  const user = c.get('user');
+
+  const meRes = await fetch('https://api.notion.com/v1/users/me', {
+    headers: {
+      Authorization: `Bearer ${user.notion_token}`,
+      'Notion-Version': '2022-06-28',
+    },
+  });
+  const meData = await meRes.json();
+  return c.json({ id: user.id, notion_user_data: meData });
 });
 
 app.get('/api/logout', async (c) => {
-  const sessionToken = getCookie(c, MOCHA_SESSION_TOKEN_COOKIE_NAME);
-
-  if (typeof sessionToken === 'string') {
-    await deleteSession(sessionToken, {
-      apiUrl: c.env.MOCHA_USERS_SERVICE_API_URL,
-      apiKey: c.env.MOCHA_USERS_SERVICE_API_KEY,
-    });
-  }
-
-  setCookie(c, MOCHA_SESSION_TOKEN_COOKIE_NAME, '', {
+  setCookie(c, NOTION_TOKEN_COOKIE_NAME, '', {
     httpOnly: true,
     path: '/',
     sameSite: 'none',
     secure: true,
     maxAge: 0,
   });
-
+  setCookie(c, NOTION_USER_COOKIE_NAME, '', {
+    httpOnly: true,
+    path: '/',
+    sameSite: 'none',
+    secure: true,
+    maxAge: 0,
+  });
   return c.json({ success: true }, 200);
 });
 
 // Answers API
-app.get('/api/answers', authMiddleware, async (c) => {
+app.get('/api/answers', notionAuthMiddleware, async (c) => {
   const user = c.get('user')!;
   const { type, limit = '20', offset = '0', search } = c.req.query();
 
@@ -121,20 +183,62 @@ app.get('/api/answers', authMiddleware, async (c) => {
   return c.json(results as Answer[]);
 });
 
-app.post('/api/answers', authMiddleware, zValidator('json', CreateAnswerRequestSchema), async (c) => {
+app.post('/api/answers', notionAuthMiddleware, zValidator('json', CreateAnswerRequestSchema), async (c) => {
   const user = c.get('user')!;
   const { type, question_1, question_2, question_3 } = c.req.valid('json');
 
+  // Save to Notion first
+  const notionRes = await fetch('https://api.notion.com/v1/pages', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${user.notion_token}`,
+      'Content-Type': 'application/json',
+      'Notion-Version': '2022-06-28',
+    },
+    body: JSON.stringify({
+      parent: { database_id: c.env.NOTION_DATABASE_ID },
+      properties: {
+        Name: {
+          title: [
+            {
+              text: { content: `${type} entry` },
+            },
+          ],
+        },
+        Type: { select: { name: type } },
+      },
+      children: [
+        {
+          object: 'block',
+          type: 'paragraph',
+          paragraph: { rich_text: [{ text: { content: question_1 || '' } }] },
+        },
+        {
+          object: 'block',
+          type: 'paragraph',
+          paragraph: { rich_text: [{ text: { content: question_2 || '' } }] },
+        },
+        {
+          object: 'block',
+          type: 'paragraph',
+          paragraph: { rich_text: [{ text: { content: question_3 || '' } }] },
+        },
+      ],
+    }),
+  });
+
+  const notionData = await notionRes.json<{ id: string }>();
+
   const { results } = await c.env.DB.prepare(`
-    INSERT INTO answers (user_id, type, question_1, question_2, question_3, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    INSERT INTO answers (user_id, type, question_1, question_2, question_3, notion_page_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
     RETURNING *
-  `).bind(user.id, type, question_1, question_2, question_3).all();
+  `).bind(user.id, type, question_1, question_2, question_3, notionData.id).all();
 
   return c.json(results[0] as Answer, 201);
 });
 
-app.put('/api/answers/:id', authMiddleware, zValidator('json', UpdateAnswerRequestSchema), async (c) => {
+app.put('/api/answers/:id', notionAuthMiddleware, zValidator('json', UpdateAnswerRequestSchema), async (c) => {
   const user = c.get('user')!;
   const id = parseInt(c.req.param('id'));
   const updates = c.req.valid('json');
@@ -159,7 +263,7 @@ app.put('/api/answers/:id', authMiddleware, zValidator('json', UpdateAnswerReque
   params.push(user.id, id);
 
   const { results } = await c.env.DB.prepare(`
-    UPDATE answers 
+    UPDATE answers
     SET ${setParts.join(', ')}
     WHERE user_id = ? AND id = ?
     RETURNING *
@@ -169,26 +273,79 @@ app.put('/api/answers/:id', authMiddleware, zValidator('json', UpdateAnswerReque
     return c.json({ error: 'Answer not found' }, 404);
   }
 
-  return c.json(results[0] as Answer);
+  const updated = results[0] as Answer;
+
+  if (updated.notion_page_id) {
+    await fetch(`https://api.notion.com/v1/pages/${updated.notion_page_id}`, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${user.notion_token}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28',
+      },
+      body: JSON.stringify({
+        properties: {
+          Name: {
+            title: [{ text: { content: `${updated.type} entry` } }],
+          },
+        },
+        children: [
+          {
+            object: 'block',
+            type: 'paragraph',
+            paragraph: { rich_text: [{ text: { content: updates.question_1 ?? updated.question_1 ?? '' } }] },
+          },
+          {
+            object: 'block',
+            type: 'paragraph',
+            paragraph: { rich_text: [{ text: { content: updates.question_2 ?? updated.question_2 ?? '' } }] },
+          },
+          {
+            object: 'block',
+            type: 'paragraph',
+            paragraph: { rich_text: [{ text: { content: updates.question_3 ?? updated.question_3 ?? '' } }] },
+          },
+        ],
+      }),
+    });
+  }
+
+  return c.json(updated);
 });
 
-app.delete('/api/answers/:id', authMiddleware, async (c) => {
+app.delete('/api/answers/:id', notionAuthMiddleware, async (c) => {
   const user = c.get('user')!;
   const id = parseInt(c.req.param('id'));
 
-  const { success } = await c.env.DB.prepare(`
+  const { results } = await c.env.DB.prepare(
+    `SELECT notion_page_id FROM answers WHERE user_id = ? AND id = ?`
+  ).bind(user.id, id).all();
+
+  if (results.length === 0) {
+    return c.json({ error: 'Answer not found' }, 404);
+  }
+
+  const pageId = results[0].notion_page_id as string | null;
+
+  await c.env.DB.prepare(`
     DELETE FROM answers WHERE user_id = ? AND id = ?
   `).bind(user.id, id).run();
 
-  if (!success) {
-    return c.json({ error: 'Answer not found' }, 404);
+  if (pageId) {
+    await fetch(`https://api.notion.com/v1/blocks/${pageId}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${user.notion_token}`,
+        'Notion-Version': '2022-06-28',
+      },
+    });
   }
 
   return c.json({ success: true });
 });
 
 // Practices API
-app.get('/api/practices', authMiddleware, async (c) => {
+app.get('/api/practices', notionAuthMiddleware, async (c) => {
   const user = c.get('user')!;
   const { limit = '50' } = c.req.query();
 
@@ -202,7 +359,7 @@ app.get('/api/practices', authMiddleware, async (c) => {
   return c.json(results as Practice[]);
 });
 
-app.post('/api/practices', authMiddleware, zValidator('json', CreatePracticeRequestSchema), async (c) => {
+app.post('/api/practices', notionAuthMiddleware, zValidator('json', CreatePracticeRequestSchema), async (c) => {
   const user = c.get('user')!;
   const { type, duration_seconds } = c.req.valid('json');
 
@@ -215,7 +372,7 @@ app.post('/api/practices', authMiddleware, zValidator('json', CreatePracticeRequ
   return c.json(results[0] as Practice, 201);
 });
 
-app.delete('/api/practices/:id', authMiddleware, async (c) => {
+app.delete('/api/practices/:id', notionAuthMiddleware, async (c) => {
   const user = c.get('user')!;
   const id = parseInt(c.req.param('id'));
 
@@ -231,7 +388,7 @@ app.delete('/api/practices/:id', authMiddleware, async (c) => {
 });
 
 // Settings API
-app.get('/api/settings', authMiddleware, async (c) => {
+app.get('/api/settings', notionAuthMiddleware, async (c) => {
   const user = c.get('user')!;
 
   const { results } = await c.env.DB.prepare(`
@@ -252,7 +409,7 @@ app.get('/api/settings', authMiddleware, async (c) => {
   return c.json(results[0] as UserSettings);
 });
 
-app.put('/api/settings', authMiddleware, zValidator('json', UpdateSettingsRequestSchema), async (c) => {
+app.put('/api/settings', notionAuthMiddleware, zValidator('json', UpdateSettingsRequestSchema), async (c) => {
   const user = c.get('user')!;
   const settings = c.req.valid('json');
 
@@ -271,6 +428,10 @@ app.put('/api/settings', authMiddleware, zValidator('json', UpdateSettingsReques
     setParts.push('theme = ?');
     params.push(settings.theme);
   }
+  if (settings.notion_token !== undefined) {
+    setParts.push('notion_token = ?');
+    params.push(settings.notion_token);
+  }
 
   setParts.push('updated_at = datetime(\'now\')');
   params.push(user.id);
@@ -286,7 +447,7 @@ app.put('/api/settings', authMiddleware, zValidator('json', UpdateSettingsReques
 });
 
 // Todos API
-app.get('/api/todos', authMiddleware, async (c) => {
+app.get('/api/todos', notionAuthMiddleware, async (c) => {
   const user = c.get('user')!;
   const { completed, priority, limit = '50' } = c.req.query();
 
@@ -311,7 +472,7 @@ app.get('/api/todos', authMiddleware, async (c) => {
   return c.json(results as Todo[]);
 });
 
-app.post('/api/todos', authMiddleware, zValidator('json', CreateTodoRequestSchema), async (c) => {
+app.post('/api/todos', notionAuthMiddleware, zValidator('json', CreateTodoRequestSchema), async (c) => {
   const user = c.get('user')!;
   const { title, description, priority, due_date, notes, list_name, reminder_date, estimated_pomodoros } = c.req.valid('json');
 
@@ -324,7 +485,7 @@ app.post('/api/todos', authMiddleware, zValidator('json', CreateTodoRequestSchem
   return c.json(results[0] as Todo, 201);
 });
 
-app.put('/api/todos/:id', authMiddleware, zValidator('json', UpdateTodoRequestSchema), async (c) => {
+app.put('/api/todos/:id', notionAuthMiddleware, zValidator('json', UpdateTodoRequestSchema), async (c) => {
   const user = c.get('user')!;
   const id = parseInt(c.req.param('id'));
   const updates = c.req.valid('json');
@@ -390,7 +551,7 @@ app.put('/api/todos/:id', authMiddleware, zValidator('json', UpdateTodoRequestSc
   return c.json(results[0] as Todo);
 });
 
-app.delete('/api/todos/:id', authMiddleware, async (c) => {
+app.delete('/api/todos/:id', notionAuthMiddleware, async (c) => {
   const user = c.get('user')!;
   const id = parseInt(c.req.param('id'));
 
@@ -406,7 +567,7 @@ app.delete('/api/todos/:id', authMiddleware, async (c) => {
 });
 
 // Pomodoro Sessions API
-app.get('/api/pomodoro-sessions', authMiddleware, async (c) => {
+app.get('/api/pomodoro-sessions', notionAuthMiddleware, async (c) => {
   const user = c.get('user')!;
   const { limit = '50' } = c.req.query();
 
@@ -420,7 +581,7 @@ app.get('/api/pomodoro-sessions', authMiddleware, async (c) => {
   return c.json(results as PomodoroSession[]);
 });
 
-app.post('/api/pomodoro-sessions', authMiddleware, zValidator('json', CreatePomodoroSessionRequestSchema), async (c) => {
+app.post('/api/pomodoro-sessions', notionAuthMiddleware, zValidator('json', CreatePomodoroSessionRequestSchema), async (c) => {
   const user = c.get('user')!;
   const { type, duration_minutes, task_id } = c.req.valid('json');
 
